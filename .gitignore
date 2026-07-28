@@ -1,0 +1,7 @@
+knowledge-studio
+.env
+.studio/
+dist/
+coverage.out
+go.work
+go.work.sum

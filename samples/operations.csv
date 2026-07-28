@@ -1,0 +1,7 @@
+id,status,owner,priority,description,url
+A-100,active,search-platform,1,"Hybrid retrieval combines vectors, keyword search, and reranking.",https://example.com/docs/retrieval
+B-210,draft,agent-runtime,2,"This field contains a comma, a quoted ""phrase"", and enough content to exercise long-record handling.",https://example.com/docs/agents
+C-305,active,knowledge-team,1,"Line one describes extraction.
+Line two remains part of the same quoted CSV field.",https://example.com/docs/extraction
+S-410,draft,,0,This row intentionally leaves the owner field empty,https://example.com/docs/csv
+U-500,active,internationalization,3,中文与 emoji 👩‍💻 are retained only for mixed-character boundary testing.,https://example.com/docs/unicode

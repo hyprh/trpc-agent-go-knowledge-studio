@@ -1,0 +1,50 @@
+{
+  "catalog": {
+    "name": "Knowledge Services",
+    "version": "v1.2.3",
+    "owners": ["agent-platform", "search-infrastructure"],
+    "services": {
+      "2": {
+        "name": "document-parser",
+        "formats": ["pdf", "docx", "pptx", "png"],
+        "status": "stable"
+      },
+      "10": {
+        "name": "hybrid-retrieval",
+        "modes": ["vector", "keyword", "rrf"],
+        "status": "preview"
+      },
+      "1a": {
+        "name": "graph-context",
+        "languages": ["go", "python", "proto"],
+        "status": "experimental"
+      }
+    }
+  },
+  "policies": [
+    {
+      "id": "retention",
+      "value": "30d",
+      "metadata": {
+        "region": "local",
+        "encrypted": true
+      }
+    },
+    {
+      "id": "network",
+      "value": "deny-by-default",
+      "metadata": {
+        "allowed_endpoints": [
+          "http://127.0.0.1:5001",
+          "postgres://127.0.0.1:5432"
+        ]
+      }
+    }
+  ],
+  "edge_cases": {
+    "empty": "",
+    "null": null,
+    "unicode": "混合字符？！ 👩‍💻",
+    "numbers": [12.6, 2.8, 12, 1000000]
+  }
+}

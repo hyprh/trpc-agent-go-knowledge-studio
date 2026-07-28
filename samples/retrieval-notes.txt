@@ -1,0 +1,13 @@
+Knowledge Studio is a developer workbench for observing and tuning a RAG pipeline.
+
+Preview mode should be useful before an embedding model or vector database is configured.
+
+PGVector is the recommended persistent store because it supports vector, keyword, hybrid, and filtered search. SQLiteVec remains useful for lightweight local experiments, but hybrid search should never silently pretend to be available when it is actually vector-only.
+
+Docling converts complex PDFs, Office documents, and images into Markdown or text. The first implementation keeps Docling as an extractor and continues to use trpc-agent-go readers and chunking strategies.
+
+Short sentence.
+
+Another short sentence.
+
+12.6, 2.8.12, and v1.2.3 must remain intact. Consecutive punctuation such as ?! and ？！ should not create empty chunks.

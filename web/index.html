@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Knowledge Studio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">K</div>
+        <div>
+          <h1>Knowledge Studio</h1>
+          <p>Local-first RAG workbench · developed by trpc-agent-go</p>
+        </div>
+      </div>
+      <nav class="primary-nav" aria-label="Workspace">
+        <button class="nav-button active" type="button" data-view="pipeline">Pipeline</button>
+        <button class="nav-button" type="button" data-view="retrieval">Retrieval Lab</button>
+      </nav>
+      <div class="health-pill" id="healthPill">
+        <span class="health-dot"></span>
+        <span id="healthLabel">Checking backend</span>
+      </div>
+    </header>
+
+    <section class="workspace-view pipeline-view active" id="pipelineView">
+      <aside class="control-rail">
+        <div class="rail-heading">
+          <div>
+            <span class="eyebrow">Pipeline configuration</span>
+            <h2>Inspect every boundary</h2>
+          </div>
+          <span class="step-badge">01</span>
+        </div>
+
+        <div class="control-scroll">
+          <section class="control-group">
+            <div class="group-title">
+              <span>Input</span>
+              <span class="group-state" id="inputState">Sample</span>
+            </div>
+            <label>
+              Sample document
+              <select id="sampleSelect"></select>
+            </label>
+            <div class="button-row">
+              <label class="upload-button">
+                <input id="fileInput" type="file">
+                Upload document
+              </label>
+              <button class="subtle-button" id="resetInputButton" type="button">Reset</button>
+            </div>
+            <label>
+              Document name
+              <input id="documentName" type="text" value="product-handbook.md">
+            </label>
+          </section>
+
+          <section class="control-group">
+            <div class="group-title">
+              <span>Extraction</span>
+              <span class="group-state">Optional</span>
+            </div>
+            <label>
+              Extractor
+              <select id="extractorSelect">
+                <option value="direct">Direct · no extraction</option>
+                <option value="docling">Docling Serve</option>
+              </select>
+            </label>
+            <div class="conditional-fields" id="doclingFields" hidden>
+              <label>
+                Docling endpoint
+                <input id="doclingEndpoint" type="url" value="http://127.0.0.1:5001">
+              </label>
+              <div class="two-column">
+                <label>
+                  Output
+                  <select id="outputFormat">
+                    <option value="markdown">Markdown</option>
+                    <option value="text">Text</option>
+                  </select>
+                </label>
+                <label>
+                  Images
+                  <select id="imageMode">
+                    <option value="placeholder">Placeholder</option>
+                    <option value="referenced">Referenced</option>
+                    <option value="embedded">Embedded</option>
+                  </select>
+                </label>
+              </div>
+              <label class="check-label">
+                <input id="ocrEnabled" type="checkbox" checked>
+                <span>Enable OCR in Docling</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="control-group">
+            <div class="group-title">
+              <span>Read & chunk</span>
+              <span class="group-state">Runes</span>
+            </div>
+            <div class="two-column">
+              <label>
+                Reader
+                <select id="readerSelect">
+                  <option value="auto">Auto detect</option>
+                  <option value="text">Text</option>
+                  <option value="markdown">Markdown</option>
+                  <option value="json">JSON</option>
+                  <option value="csv">CSV</option>
+                  <option value="proto">Proto AST</option>
+                </select>
+              </label>
+              <label>
+                Strategy
+                <select id="strategySelect">
+                  <option value="reader">Reader default</option>
+                  <option value="fixed">Fixed</option>
+                  <option value="recursive">Recursive</option>
+                  <option value="markdown">Markdown</option>
+                  <option value="json">JSON</option>
+                </select>
+              </label>
+            </div>
+            <div class="two-column">
+              <label>
+                Chunk size
+                <input id="chunkSize" type="number" min="16" value="500">
+              </label>
+              <label>
+                Overlap
+                <input id="overlap" type="number" min="0" value="0">
+              </label>
+            </div>
+            <p class="field-note" id="chunkingNote">Reader default resolves from the selected document type.</p>
+          </section>
+        </div>
+
+        <div class="rail-actions">
+          <button class="primary-button" id="previewButton" type="button">
+            <span>Run preview</span>
+            <span class="button-arrow">→</span>
+          </button>
+          <button class="subtle-button full" id="copyConfigButton" type="button" disabled>Copy Go config</button>
+          <div class="action-status" id="previewStatus">Choose a sample or upload one document.</div>
+        </div>
+      </aside>
+
+      <main class="pipeline-main">
+        <section class="metric-strip" aria-label="Preview summary">
+          <div class="metric">
+            <span class="metric-label">Input</span>
+            <strong id="metricInput">—</strong>
+            <small id="metricInputDetail">No preview</small>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Output</span>
+            <strong id="metricChunks">—</strong>
+            <small id="metricStrategy">Chunks</small>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Average</span>
+            <strong id="metricAverage">—</strong>
+            <small id="metricRange">Size range</small>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Budget</span>
+            <strong id="metricBudget">—</strong>
+            <small id="metricMapped">Mapping</small>
+          </div>
+          <div class="metric-actions">
+            <label class="switch-label">
+              <input id="syncScroll" type="checkbox" checked>
+              <span>Sync scroll</span>
+            </label>
+            <button class="icon-button" id="metadataButton" type="button" disabled>Metadata</button>
+          </div>
+        </section>
+
+        <div class="warning-banner" id="warningBanner" hidden></div>
+
+        <section class="viewer" id="viewer">
+          <article class="viewer-panel source-panel">
+            <header class="panel-header">
+              <div>
+                <span class="panel-kicker">Source trace</span>
+                <h3 id="sourceTitle">No document selected</h3>
+              </div>
+              <div class="segmented-control" role="tablist">
+                <button class="segment active" id="extractedTab" type="button" data-source-tab="extracted">Extracted</button>
+                <button class="segment" id="rawTab" type="button" data-source-tab="raw">Raw</button>
+              </div>
+            </header>
+            <div class="source-editor-wrap" id="sourceEditorWrap">
+              <textarea id="sourceEditor" spellcheck="false" aria-label="Document content"></textarea>
+              <pre class="source-map" id="sourceMap" hidden></pre>
+            </div>
+            <footer class="panel-footer">
+              <span id="sourceFooter">Editable sample input</span>
+              <span class="legend"><i class="legend-map"></i> mapped <i class="legend-overlap"></i> overlap</span>
+            </footer>
+          </article>
+
+          <svg class="connector-layer" id="connectorLayer" aria-hidden="true"></svg>
+
+          <article class="viewer-panel chunks-panel">
+            <header class="panel-header">
+              <div>
+                <span class="panel-kicker">Chunk output</span>
+                <h3 id="chunksTitle">Run a preview</h3>
+              </div>
+              <span class="panel-chip" id="sizeUnitChip">runes</span>
+            </header>
+            <div class="chunks-list empty" id="chunksList">
+              <div class="empty-state">
+                <div class="empty-orbit"><span></span></div>
+                <h4>No chunks yet</h4>
+                <p>Run the current pipeline to inspect boundaries, overlap, and metadata.</p>
+              </div>
+            </div>
+            <footer class="panel-footer">
+              <span id="chunksFooter">Chunk IDs and source mapping appear here.</span>
+              <button class="text-button" id="openRetrievalButton" type="button" disabled>Index these chunks →</button>
+            </footer>
+          </article>
+        </section>
+      </main>
+    </section>
+
+    <section class="workspace-view retrieval-view" id="retrievalView">
+      <aside class="control-rail retrieval-rail">
+        <div class="rail-heading">
+          <div>
+            <span class="eyebrow">Index configuration</span>
+            <h2>Build the real store</h2>
+          </div>
+          <span class="step-badge">02</span>
+        </div>
+        <div class="control-scroll">
+          <section class="context-card" id="previewContext">
+            <span>Preview snapshot</span>
+            <strong>No preview available</strong>
+            <small>Return to Pipeline and run a preview first.</small>
+          </section>
+
+          <section class="control-group">
+            <div class="group-title">
+              <span>Vector store</span>
+              <span class="group-state">PGVector default</span>
+            </div>
+            <label>
+              Store
+              <select id="storeType">
+                <option value="pgvector">PGVector</option>
+                <option value="memory">InMemory · ephemeral</option>
+              </select>
+            </label>
+            <div class="conditional-fields" id="pgvectorFields">
+              <label>
+                PostgreSQL DSN
+                <input id="pgvectorDSN" type="password" value="postgres://postgres:postgres@127.0.0.1:5432/knowledge_studio?sslmode=disable">
+              </label>
+              <label>
+                Table
+                <input id="pgvectorTable" type="text" value="knowledge_studio_documents">
+              </label>
+              <div class="two-column">
+                <label>
+                  Fusion
+                  <select id="fusionMode">
+                    <option value="rrf">RRF</option>
+                    <option value="weighted">Weighted</option>
+                  </select>
+                </label>
+                <label class="check-label compact">
+                  <input id="enableTextSearch" type="checkbox" checked>
+                  <span>TSVector</span>
+                </label>
+              </div>
+              <label class="check-label">
+                <input id="recreateIndex" type="checkbox">
+                <span>Delete existing rows in this table before loading</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="control-group">
+            <div class="group-title">
+              <span>Embedding</span>
+              <span class="group-state">OpenAI compatible</span>
+            </div>
+            <label>
+              Base URL
+              <input id="embedderBaseURL" type="url" placeholder="https://api.openai.com/v1">
+            </label>
+            <label>
+              API key
+              <input id="embedderAPIKey" type="password" placeholder="Uses OPENAI_API_KEY when empty">
+            </label>
+            <label>
+              Model
+              <input id="embedderModel" type="text" value="text-embedding-3-small">
+            </label>
+            <div class="two-column">
+              <label>
+                Dimensions
+                <input id="embedderDimensions" type="number" min="1" value="1536">
+              </label>
+              <label>
+                Final top K
+                <input id="rerankerTopK" type="number" min="1" value="8">
+              </label>
+            </div>
+          </section>
+        </div>
+        <div class="rail-actions">
+          <button class="primary-button" id="buildIndexButton" type="button" disabled>
+            <span>Build index</span>
+            <span class="button-arrow">→</span>
+          </button>
+          <div class="action-status" id="indexStatus">A preview snapshot is required.</div>
+        </div>
+      </aside>
+
+      <main class="retrieval-main">
+        <section class="retrieval-hero">
+          <div>
+            <span class="eyebrow">Retrieval Lab</span>
+            <h2>See what the agent will receive.</h2>
+            <p>Run the actual <code>knowledge.Load</code> and <code>knowledge.Search</code> path. Dense and sparse scores remain visible.</p>
+          </div>
+          <div class="index-badge" id="indexBadge">
+            <span>Index status</span>
+            <strong>Not built</strong>
+            <small>Configure a store and embedding model.</small>
+          </div>
+        </section>
+
+        <section class="search-console">
+          <div class="query-grid">
+            <label class="query-field">
+              Search query
+              <textarea id="searchQuery" rows="3" placeholder="What makes PGVector the recommended persistent store?"></textarea>
+            </label>
+            <div class="query-options">
+              <label>
+                Mode
+                <select id="searchMode">
+                  <option value="hybrid">Hybrid</option>
+                  <option value="vector">Vector</option>
+                  <option value="keyword">Keyword</option>
+                  <option value="filter">Filter</option>
+                </select>
+              </label>
+              <label>
+                Candidates
+                <input id="maxResults" type="number" min="1" value="8">
+              </label>
+              <label>
+                Minimum score
+                <input id="minScore" type="number" min="0" max="1" step="0.01" value="0">
+              </label>
+            </div>
+          </div>
+          <label>
+            Metadata filter · JSON
+            <input id="metadataFilter" type="text" placeholder='{"category":"guide"}'>
+          </label>
+          <div class="search-actions">
+            <button class="primary-button compact-button" id="searchButton" type="button" disabled>Run search</button>
+            <span id="searchStatus">Build an index to enable search.</span>
+          </div>
+        </section>
+
+        <section class="search-results empty" id="searchResults">
+          <div class="empty-state retrieval-empty">
+            <div class="empty-orbit"><span></span></div>
+            <h4>No retrieval trace yet</h4>
+            <p>Results will include rank, final score, dense score, sparse score, content, and metadata.</p>
+          </div>
+        </section>
+      </main>
+    </section>
+  </div>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

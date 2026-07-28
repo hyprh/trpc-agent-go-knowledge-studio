@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title description">
+  <title id="title">Knowledge Studio pipeline overview</title>
+  <desc id="description">A local workbench with configuration, source trace, chunk output, and retrieval stages.</desc>
+  <defs>
+    <linearGradient id="header" x1="0" x2="1">
+      <stop offset="0" stop-color="#102421"/>
+      <stop offset="1" stop-color="#183d36"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#17322c" flood-opacity=".12"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" rx="18" fill="#f4f7f5"/>
+  <rect width="1200" height="70" rx="18" fill="url(#header)"/>
+  <rect y="52" width="1200" height="18" fill="url(#header)"/>
+  <rect x="22" y="17" width="36" height="36" rx="10" fill="#a5e5d2"/>
+  <text x="40" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#102421">K</text>
+  <text x="72" y="33" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#f7fffc">Knowledge Studio</text>
+  <text x="72" y="49" font-family="Arial, sans-serif" font-size="9" fill="#9fb8b2">local-first RAG workbench</text>
+  <rect x="506" y="18" width="188" height="34" rx="9" fill="#1d3934" stroke="#41615b"/>
+  <rect x="510" y="22" width="91" height="26" rx="6" fill="#d7f1e7"/>
+  <text x="555" y="39" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="#17312b">Pipeline</text>
+  <text x="647" y="39" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#a8bdb8">Retrieval Lab</text>
+
+  <rect x="0" y="70" width="300" height="550" fill="#edf3ef"/>
+  <line x1="300" y1="70" x2="300" y2="620" stroke="#d6e0dc"/>
+  <text x="24" y="105" font-family="Arial, sans-serif" font-size="9" font-weight="700" letter-spacing="1.4" fill="#0f806c">PIPELINE CONFIGURATION</text>
+  <text x="24" y="129" font-family="Arial, sans-serif" font-size="19" font-weight="700" fill="#172321">Inspect every boundary</text>
+  <g font-family="Arial, sans-serif">
+    <rect x="22" y="154" width="256" height="112" rx="11" fill="#fff" stroke="#d7e0dc"/>
+    <text x="37" y="178" font-size="11" font-weight="700" fill="#33443f">Input</text>
+    <rect x="37" y="191" width="226" height="29" rx="6" fill="#f8faf9" stroke="#cad5d0"/>
+    <text x="48" y="210" font-size="10" fill="#66736f">product-handbook.md</text>
+    <rect x="37" y="229" width="142" height="25" rx="6" fill="#eff7f4" stroke="#a8c9c0" stroke-dasharray="3 3"/>
+    <text x="108" y="245" text-anchor="middle" font-size="9" fill="#49615a">Upload document</text>
+
+    <rect x="22" y="278" width="256" height="104" rx="11" fill="#fff" stroke="#d7e0dc"/>
+    <text x="37" y="302" font-size="11" font-weight="700" fill="#33443f">Extraction</text>
+    <rect x="37" y="315" width="226" height="31" rx="6" fill="#f8faf9" stroke="#cad5d0"/>
+    <text x="48" y="335" font-size="10" fill="#66736f">Direct · no extraction</text>
+    <text x="37" y="366" font-size="9" fill="#83908c">Switch to Docling for PDF and Office files.</text>
+
+    <rect x="22" y="394" width="256" height="142" rx="11" fill="#fff" stroke="#d7e0dc"/>
+    <text x="37" y="418" font-size="11" font-weight="700" fill="#33443f">Read &amp; chunk</text>
+    <rect x="37" y="431" width="105" height="31" rx="6" fill="#f8faf9" stroke="#cad5d0"/>
+    <rect x="154" y="431" width="109" height="31" rx="6" fill="#f8faf9" stroke="#cad5d0"/>
+    <text x="49" y="451" font-size="10" fill="#66736f">Auto detect</text>
+    <text x="166" y="451" font-size="10" fill="#66736f">Markdown</text>
+    <text x="37" y="483" font-size="9" fill="#75837f">Chunk size</text>
+    <text x="154" y="483" font-size="9" fill="#75837f">Overlap</text>
+    <rect x="37" y="491" width="105" height="30" rx="6" fill="#f8faf9" stroke="#cad5d0"/>
+    <rect x="154" y="491" width="109" height="30" rx="6" fill="#f8faf9" stroke="#cad5d0"/>
+    <text x="49" y="511" font-size="10" font-family="monospace" fill="#33443f">500 runes</text>
+    <text x="166" y="511" font-size="10" font-family="monospace" fill="#33443f">0</text>
+  </g>
+  <rect x="22" y="558" width="256" height="40" rx="8" fill="#0f806c"/>
+  <text x="42" y="583" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#fff">Run preview</text>
+  <text x="257" y="583" text-anchor="end" font-family="Arial, sans-serif" font-size="16" fill="#fff">→</text>
+
+  <rect x="320" y="91" width="860" height="55" rx="10" fill="#fff" stroke="#dce3df"/>
+  <g font-family="Arial, sans-serif">
+    <text x="339" y="111" font-size="8" font-weight="700" letter-spacing="1" fill="#83908c">INPUT</text>
+    <text x="339" y="130" font-family="monospace" font-size="13" fill="#172321">1,842 runes</text>
+    <text x="510" y="111" font-size="8" font-weight="700" letter-spacing="1" fill="#83908c">OUTPUT</text>
+    <text x="510" y="130" font-family="monospace" font-size="13" fill="#172321">6 chunks</text>
+    <text x="674" y="111" font-size="8" font-weight="700" letter-spacing="1" fill="#83908c">AVERAGE</text>
+    <text x="674" y="130" font-family="monospace" font-size="13" fill="#172321">307.0</text>
+    <text x="838" y="111" font-size="8" font-weight="700" letter-spacing="1" fill="#83908c">BUDGET</text>
+    <text x="838" y="130" font-family="monospace" font-size="13" fill="#0f806c">OK</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="320" y="164" width="386" height="430" rx="13" fill="#fff" stroke="#cbd6d1"/>
+    <rect x="794" y="164" width="386" height="430" rx="13" fill="#fff" stroke="#cbd6d1"/>
+  </g>
+  <line x1="320" y1="222" x2="706" y2="222" stroke="#dce3df"/>
+  <line x1="794" y1="222" x2="1180" y2="222" stroke="#dce3df"/>
+  <text x="337" y="185" font-family="Arial, sans-serif" font-size="8" font-weight="700" letter-spacing="1" fill="#0f806c">SOURCE TRACE</text>
+  <text x="337" y="207" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#172321">product-handbook.md</text>
+  <text x="811" y="185" font-family="Arial, sans-serif" font-size="8" font-weight="700" letter-spacing="1" fill="#0f806c">CHUNK OUTPUT</text>
+  <text x="811" y="207" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#172321">6 chunks · Markdown</text>
+
+  <g font-family="monospace" font-size="8.6" fill="#384743">
+    <text x="338" y="251"># Product knowledge handbook</text>
+    <text x="338" y="270">This sample exercises headings, long prose,</text>
+    <text x="338" y="289">tables, code blocks, and multilingual text.</text>
+    <rect x="334" y="302" width="340" height="72" rx="5" fill="#dff2eb"/>
+    <text x="338" y="321">## Persistent storage</text>
+    <text x="338" y="340">PGVector is the recommended persistent store.</text>
+    <text x="338" y="359">It supports vector, keyword, hybrid, and filter.</text>
+    <text x="338" y="397">## Boundary cases</text>
+    <text x="338" y="416">Version tokens: 12.6, 2.8.12, and v1.2.3.</text>
+    <rect x="334" y="430" width="316" height="18" rx="3" fill="#ffd8c9"/>
+    <text x="338" y="443">Mixed punctuation: ？！ 中文 and English.</text>
+  </g>
+
+  <g>
+    <path d="M 674 322 C 730 322, 755 268, 812 268" fill="none" stroke="#e86f42" stroke-width="2"/>
+    <path d="M 674 401 C 730 401, 755 384, 812 384" fill="none" stroke="#9dbdb4" stroke-width="1.4"/>
+    <path d="M 674 439 C 730 439, 755 499, 812 499" fill="none" stroke="#9dbdb4" stroke-width="1.4"/>
+  </g>
+
+  <g font-family="Arial, sans-serif">
+    <rect x="812" y="242" width="350" height="93" rx="8" fill="#fff" stroke="#e28b6a"/>
+    <rect x="812" y="242" width="4" height="93" rx="2" fill="#e86f42"/>
+    <rect x="826" y="253" width="22" height="22" rx="5" fill="#dff2eb"/>
+    <text x="837" y="268" text-anchor="middle" font-family="monospace" font-size="8" fill="#0a6657">02</text>
+    <text x="856" y="268" font-family="monospace" font-size="8" fill="#76847f">preview-…-chunk-2</text>
+    <text x="1147" y="268" text-anchor="end" font-family="monospace" font-size="8" fill="#76847f">486r · mapped</text>
+    <text x="826" y="294" font-family="monospace" font-size="8.5" fill="#35443f">## Persistent storage</text>
+    <text x="826" y="311" font-family="monospace" font-size="8.5" fill="#35443f">PGVector is the recommended persistent…</text>
+
+    <rect x="812" y="353" width="350" height="93" rx="8" fill="#fff" stroke="#dce3df"/>
+    <rect x="812" y="353" width="4" height="93" rx="2" fill="#95bfb4"/>
+    <rect x="826" y="364" width="22" height="22" rx="5" fill="#dff2eb"/>
+    <text x="837" y="379" text-anchor="middle" font-family="monospace" font-size="8" fill="#0a6657">03</text>
+    <text x="856" y="379" font-family="monospace" font-size="8" fill="#76847f">preview-…-chunk-3</text>
+    <text x="826" y="407" font-family="monospace" font-size="8.5" fill="#35443f">## Boundary cases</text>
+    <text x="826" y="424" font-family="monospace" font-size="8.5" fill="#35443f">Version tokens remain on natural boundaries…</text>
+
+    <rect x="812" y="464" width="350" height="93" rx="8" fill="#fff" stroke="#dce3df"/>
+    <rect x="812" y="464" width="4" height="93" rx="2" fill="#95bfb4"/>
+    <rect x="826" y="475" width="22" height="22" rx="5" fill="#dff2eb"/>
+    <text x="837" y="490" text-anchor="middle" font-family="monospace" font-size="8" fill="#0a6657">04</text>
+    <rect x="826" y="512" width="92" height="13" rx="2" fill="#ffd8c9"/>
+    <text x="826" y="522" font-family="monospace" font-size="8.5" fill="#35443f">overlap prefix</text>
+    <text x="923" y="522" font-family="monospace" font-size="8.5" fill="#35443f">then the next core…</text>
+  </g>
+</svg>
