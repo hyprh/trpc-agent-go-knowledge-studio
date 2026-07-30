@@ -214,12 +214,29 @@ func (s *Server) patchBase(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	// An absent key means "keep the stored one". The API never returns it, so a
+	// client that round-trips a base it fetched has no key to send back and
+	// must not be taken to mean "clear it".
+	if in.Embedder.APIKey == "" {
+		in.Embedder.APIKey = cur.Embedder.APIKey
+	}
+
 	// Changing the embedding model or dimension invalidates every vector
 	// already written, so bump the revision and let the UI surface it rather
 	// than silently re-embedding 100k rows.
 	reindex := in.Embedder.Model != cur.Embedder.Model ||
 		in.Embedder.Dimensions != cur.Embedder.Dimensions ||
 		in.VectorStore.Type != cur.VectorStore.Type
+
+	// Anything the engine fingerprints forces the instance to be rebuilt.
+	// Renames, descriptions and retrieval defaults do not — dropping the
+	// instance for those discards an in-memory index that nothing will rebuild,
+	// leaving sources reporting "synced" over an empty store.
+	rebuild := reindex ||
+		in.Embedder.Provider != cur.Embedder.Provider ||
+		in.Embedder.BaseURL != cur.Embedder.BaseURL ||
+		in.Embedder.APIKey != cur.Embedder.APIKey ||
+		in.EnableSourceSync != cur.EnableSourceSync
 
 	in.Name = strings.TrimSpace(in.Name)
 	in.Description = strings.TrimSpace(in.Description)
@@ -241,8 +258,20 @@ func (s *Server) patchBase(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	s.eng.Invalidate(cur.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"base": cur, "reindex_required": reindex})
+	reset := int64(0)
+	if rebuild {
+		// Dropping the instance discards a non-persistent index, so the ingest
+		// state has to go with it or the UI keeps claiming those chunks exist.
+		if !cur.VectorStore.Persistent() {
+			reset, _ = s.st.ResetSyncState(r.Context(), cur.ID)
+		}
+		s.eng.Invalidate(cur.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"base":             cur,
+		"reindex_required": reindex,
+		"index_dropped":    reset,
+	})
 }
 
 func (s *Server) deleteBase(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +356,7 @@ func (s *Server) createSource(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"source": src}
 	if in.Sync {
-		t := &model.Task{BaseID: baseID, SourceID: src.ID, Kind: model.TaskAddSource, Params: src.Config}
+		t := snapshotTask(baseID, src, model.TaskAddSource)
 		if err := s.eng.Enqueue(r.Context(), t); err != nil {
 			fail(w, err)
 			return
@@ -387,12 +416,26 @@ func (s *Server) syncSource(w http.ResponseWriter, r *http.Request) {
 	if src.NeverSynced() {
 		kind = model.TaskAddSource
 	}
-	t := &model.Task{BaseID: src.BaseID, SourceID: src.ID, Kind: kind, Params: src.Config}
+	t := snapshotTask(src.BaseID, src, kind)
 	if err := s.eng.Enqueue(r.Context(), t); err != nil {
 		fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, t)
+}
+
+// snapshotTask freezes the source as it stands now. The engine executes and
+// records against this copy, so an edit made while the task is queued or
+// running belongs to the next sync rather than being credited to this one.
+func snapshotTask(baseID string, src *model.Source, kind model.TaskKind) *model.Task {
+	return &model.Task{
+		BaseID:     baseID,
+		SourceID:   src.ID,
+		Kind:       kind,
+		Params:     src.Config,
+		ConfigHash: src.ConfigHash,
+		Metadata:   src.UserMetadata,
+	}
 }
 
 func (s *Server) syncAll(w http.ResponseWriter, r *http.Request) {
@@ -414,7 +457,7 @@ func (s *Server) syncAll(w http.ResponseWriter, r *http.Request) {
 		if src.NeverSynced() {
 			kind = model.TaskAddSource
 		}
-		t := &model.Task{BaseID: baseID, SourceID: src.ID, Kind: kind, Params: src.Config}
+		t := snapshotTask(baseID, src, kind)
 		if err := s.eng.Enqueue(r.Context(), t); err != nil {
 			fail(w, err)
 			return
@@ -475,41 +518,48 @@ func (s *Server) previewChunks(w http.ResponseWriter, r *http.Request) {
 }
 
 type previewFileRequest struct {
-	Path   string             `json:"path"`
-	Config model.SourceConfig `json:"config"`
+	SourceID string             `json:"source_id"`
+	Path     string             `json:"path"`
+	Config   model.SourceConfig `json:"config"`
 }
 
+// previewFile renders one file the way ingesting it would.
+//
+// The path must belong to the named source. Without that check the endpoint
+// reads any absolute path on the host, which on a non-loopback listener hands
+// out arbitrary local files to anyone who can reach the port.
 func (s *Server) previewFile(w http.ResponseWriter, r *http.Request) {
 	var req previewFileRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	content, err := preview.ReadFile(req.Path)
+	if req.SourceID == "" {
+		writeErr(w, http.StatusBadRequest, "source_id is required")
+		return
+	}
+	src, err := s.st.GetSource(r.Context(), req.SourceID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	path, err := preview.ResolveWithinSource(src, req.Path)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	if req.Config.ReaderType == "" {
-		req.Config.ReaderType = preview.ReaderForExt(extOf(req.Path))
+		req.Config.ReaderType = src.Config.ReaderType
 	}
-	res, err := preview.Run(preview.Request{
-		Content:    content,
-		Name:       req.Path,
-		Config:     req.Config,
-		SourceKind: model.SourceFile,
-	})
+	content, res, err := preview.PreviewFile(path, req.Config)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			writeErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"content": content, "preview": res})
-}
-
-func extOf(p string) string {
-	if i := strings.LastIndex(p, "."); i >= 0 {
-		return p[i:]
-	}
-	return ""
 }
 
 // ---------------------------------------------------------------- search

@@ -5,6 +5,11 @@ const S = {
   bases: [], base: null, sources: [], source: null, tasks: {},
   tree: [], file: null, preview: null, selChunk: -1, treeFilter: '', spans: [],
   editing: null,
+  // Bumped whenever the active base changes. Every async load captures it and
+  // discards its result if it no longer matches, so a slow response for the
+  // previous base cannot land in the new one's view.
+  gen: 0,
+  previewGen: 0,
 };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) =>
@@ -131,8 +136,13 @@ document.addEventListener('click', (e) => {
 });
 
 async function selectBase(id, plate) {
-  S.base = await api('GET', '/api/bases/' + id);
-  S.source = null;
+  // Invalidate anything in flight for the previous base before touching state,
+  // so a response that arrives late is discarded rather than mixed in.
+  const gen = ++S.gen;
+  clearBaseScopedState();
+  const base = await api('GET', '/api/bases/' + id);
+  if (gen !== S.gen) return;          // superseded while fetching
+  S.base = base;
   try { localStorage.setItem('wb-base', id); } catch { /* private mode */ }
   applyBaseToChrome();
   renderSettings();
@@ -140,6 +150,41 @@ async function selectBase(id, plate) {
   await loadSources();
   loadCapabilities().catch(() => {});
   if (plate) show(plate);
+}
+
+// Drop everything scoped to the previous base in one step.
+//
+// Switching bases used to leave the inspector showing the old base's file,
+// preview and source text, which read as the new base already having content.
+function clearBaseScopedState() {
+  S.sources = [];
+  S.source = null;
+  S.tasks = {};
+  S.editing = null;
+  S.caps = null;
+  S.tree = [];
+  S.file = null;
+  S.fileSource = null;
+  S.preview = null;
+  S.content = '';
+  S.spans = [];
+  S.selChunk = -1;
+  S.metaKeys = [];
+  S.filters = [];
+  S.norm = null;
+  S.normFor = null;
+  $('ciTree').innerHTML = '';
+  $('ciChunks').innerHTML = '';
+  $('ciDoc').textContent = '';
+  $('ciMetrics').innerHTML = '';
+  $('ciBanner').innerHTML = '';
+  $('ciCrumb').textContent = '选择左侧文件';
+  $('ciApplyBtn').disabled = true;
+  $('srcBody').innerHTML = '';
+  $('srcSide').innerHTML = '';
+  $('rtBody').innerHTML = '';
+  $('rtFilters').innerHTML = '';
+  drawConnectors();
 }
 
 // Push the current base into the shell: title bar, rail label, readout, and
@@ -286,8 +331,11 @@ function renderSettings() {
       <div class="frow"><span class="fl">Base URL</span><div class="fctl">
         <input class="inp mono" id="s_base" value="${esc(e.base_url || '')}" style="width:100%"
                placeholder="http://127.0.0.1:11434/v1"></div></div>
-      <div class="frow"><span class="fl">API key</span><div class="fctl">
-        <input class="inp mono" id="s_key" value="${esc(e.api_key || '')}" style="width:100%"></div></div>
+      <div class="frow"><span class="fl">API key<small>${e.api_key_configured ? '已配置，留空表示不修改' : '尚未配置'}</small></span>
+        <div class="fctl">
+        <input class="inp mono" id="s_key" type="password" value="" autocomplete="off"
+               placeholder="${e.api_key_configured ? '••••••••（留空保持不变）' : 'sk-… 或 ollama'}"
+               style="width:100%"></div></div>
     </section>
 
     <section class="set-sec">
@@ -388,10 +436,15 @@ const STATUS_CHIP = {
 
 async function loadSources() {
   if (!S.base) return;
-  const { sources } = await api('GET', `/api/bases/${S.base.id}/sources`);
+  // Read the id once: it is awaited across two requests, and re-reading it
+  // after a switch would pair one base's sources with another's tasks.
+  const gen = S.gen, baseID = S.base.id;
+  const { sources } = await api('GET', `/api/bases/${baseID}/sources`);
+  if (gen !== S.gen) return;
+  const { tasks } = await api('GET', `/api/bases/${baseID}/tasks`);
+  if (gen !== S.gen) return;
   S.sources = sources || [];
   $('navSrcCount').textContent = S.sources.length || '';
-  const { tasks } = await api('GET', `/api/bases/${S.base.id}/tasks`);
   S.tasks = {};
   (tasks || []).forEach((t) => {
     if (t.source_id && !S.tasks[t.source_id]) S.tasks[t.source_id] = t;
@@ -870,6 +923,7 @@ function makeResizable(gutterId, cssVar, { min = 260, max = 900, side = 'right',
 /* ── chunk inspector ────────────────────────────────────────────────── */
 async function loadTree() {
   if (!S.base) return;
+  const gen = S.gen;
   const groups = [];
   for (const row of S.sources) {
     if (!row.supports_chunking) { groups.push({ row, entries: [], note: 'AST 抽取，无分块可看' }); continue; }
@@ -878,6 +932,7 @@ async function loadTree() {
       groups.push({ row, entries: r.entries || [] });
     } catch { groups.push({ row, entries: [], note: '读取失败' }); }
   }
+  if (gen !== S.gen) return;
   S.tree = groups;
   renderTree();
 }
@@ -937,7 +992,12 @@ function schedulePreview() {
 }
 
 async function runPreview() {
-  if (!S.file) return;
+  if (!S.file || !S.fileSource) return;
+  // Preview is re-run on every slider move; without a generation check a slow
+  // response for an old file or an old chunk size overwrites a newer one.
+  const gen = ++S.previewGen;
+  const baseGen = S.gen;
+  const file = S.file, sourceID = S.fileSource;
   const config = {
     chunk_size: parseInt($('ciSize').value, 10),
     chunk_overlap: parseInt($('ciOv').value, 10),
@@ -949,13 +1009,17 @@ async function runPreview() {
   const reader = $('ciReader').value;
   if (reader) config.reader_type = reader;
   try {
-    const r = await api('POST', '/api/preview/file', { path: S.file, config });
+    const r = await api('POST', '/api/preview/file',
+      { source_id: sourceID, path: file, config });
+    if (gen !== S.previewGen || baseGen !== S.gen) return;   // superseded
     S.preview = r.preview;
     S.content = r.content;
+    S.spans = [];
     S.selChunk = -1;
     $('ciBanner').innerHTML = '';
     renderPreview();
   } catch (e) {
+    if (gen !== S.previewGen || baseGen !== S.gen) return;
     S.preview = null;
     $('ciBanner').innerHTML = `<div class="banner">${esc(e.message)}</div>`;
     $('ciChunks').innerHTML = '';
@@ -1254,9 +1318,11 @@ function srcLabel(id) {
 // from what the server reports rather than hard-coded.
 async function loadCapabilities() {
   if (!S.base) return;
-  try {
-    S.caps = await api('GET', `/api/bases/${S.base.id}/capabilities`);
-  } catch { S.caps = null; }
+  const gen = S.gen;
+  let caps = null;
+  try { caps = await api('GET', `/api/bases/${S.base.id}/capabilities`); } catch { /* keep null */ }
+  if (gen !== S.gen) return;
+  S.caps = caps;
   renderRetrievalControls();
 }
 

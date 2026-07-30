@@ -44,6 +44,14 @@ type instance struct {
 	stamp string
 	// registered tracks which source IDs upstream believes it owns.
 	registered map[string]bool
+
+	// users counts callers currently holding this instance, and retired marks
+	// it as superseded. An instance is closed only once both are settled: a
+	// search or a sync task can be part way through using one when a config
+	// edit replaces it, and closing it underneath them tears down the store
+	// they are reading.
+	users   int
+	retired bool
 }
 
 // Engine owns knowledge-base instances and runs tasks against them.
@@ -53,6 +61,9 @@ type Engine struct {
 
 	mu   sync.Mutex
 	inst map[string]*instance
+	// building serialises construction per base, so two cold requests do not
+	// each build an instance and leave one of them orphaned.
+	building map[string]*sync.Mutex
 
 	qmu    sync.Mutex
 	queues map[string]chan string // baseID -> task IDs
@@ -67,12 +78,13 @@ type Engine struct {
 // New creates an engine.
 func New(st *store.Store, hub *Hub) *Engine {
 	return &Engine{
-		st:      st,
-		hub:     hub,
-		inst:    map[string]*instance{},
-		queues:  map[string]chan string{},
-		cancels: map[string]context.CancelFunc{},
-		done:    make(chan struct{}),
+		st:       st,
+		hub:      hub,
+		inst:     map[string]*instance{},
+		building: map[string]*sync.Mutex{},
+		queues:   map[string]chan string{},
+		cancels:  map[string]context.CancelFunc{},
+		done:     make(chan struct{}),
 	}
 }
 
@@ -83,7 +95,7 @@ func (e *Engine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for id, in := range e.inst {
-		_ = in.kb.Close()
+		e.retireLocked(in)
 		delete(e.inst, id)
 	}
 }
@@ -92,11 +104,13 @@ func (e *Engine) Close() {
 // use. Call after editing storage or embedding configuration.
 func (e *Engine) Invalidate(baseID string) {
 	e.mu.Lock()
-	in, ok := e.inst[baseID]
-	delete(e.inst, baseID)
-	e.mu.Unlock()
-	if ok {
-		_ = in.kb.Close()
+	defer e.mu.Unlock()
+	if in, ok := e.inst[baseID]; ok {
+		delete(e.inst, baseID)
+		// Retire rather than close: a search or a running task may still hold
+		// it, and closing the store out from under them fails the operation
+		// for a reason the caller cannot act on.
+		e.retireLocked(in)
 	}
 }
 
@@ -112,7 +126,7 @@ func stampOf(b *model.Base) string {
 // Sources that have already been ingested are registered at construction time:
 // upstream keeps its source list in memory, and ReloadSource/RemoveSource look
 // a source up by name, so after a restart they would fail without this.
-func (e *Engine) acquire(ctx context.Context, baseID string) (*instance, error) {
+func (e *Engine) acquire(ctx context.Context, baseID string) (*instance, func(), error) {
 	return e.acquireFor(ctx, baseID, true)
 }
 
@@ -121,32 +135,43 @@ func (e *Engine) acquire(ctx context.Context, baseID string) (*instance, error) 
 // Deleting a source only calls DeleteByFilter on the vector store, so refusing
 // the operation because no embedding model is set would strand a source that
 // can never be ingested and can never be removed.
-func (e *Engine) acquireFor(ctx context.Context, baseID string, requireEmbedder bool) (*instance, error) {
+// The returned release function must be called when the caller is done with
+// the instance; the instance is not closed until every holder has released it.
+func (e *Engine) acquireFor(ctx context.Context, baseID string, requireEmbedder bool) (*instance, func(), error) {
 	b, err := e.st.GetBase(ctx, baseID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stamp := stampOf(b)
 
-	e.mu.Lock()
-	if in, ok := e.inst[baseID]; ok && in.stamp == stamp {
-		e.mu.Unlock()
-		return in, nil
+	if in, ok := e.checkout(baseID, stamp); ok {
+		return in, func() { e.release(in) }, nil
 	}
-	e.mu.Unlock()
+
+	// Build under a per-base lock. Without it two cold requests each construct
+	// an instance, the second replaces the first, and the first is closed while
+	// its owner is still using it.
+	bl := e.buildLock(baseID)
+	bl.Lock()
+	defer bl.Unlock()
+
+	// Another builder may have finished while this one waited.
+	if in, ok := e.checkout(baseID, stamp); ok {
+		return in, func() { e.release(in) }, nil
+	}
 
 	if requireEmbedder && !b.Embedder.Configured() {
-		return nil, ErrEmbedderNotConfigured
+		return nil, nil, ErrEmbedderNotConfigured
 	}
 	vs, err := buildVectorStore(b)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	emb := buildEmbedder(b)
 
 	srcs, err := e.st.ListSources(ctx, baseID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	registered := map[string]bool{}
 	var upstream []source.Source
@@ -174,11 +199,56 @@ func (e *Engine) acquireFor(ctx context.Context, baseID string, requireEmbedder 
 
 	e.mu.Lock()
 	if old, ok := e.inst[baseID]; ok {
-		_ = old.kb.Close()
+		e.retireLocked(old)
 	}
+	in.users = 1 // handed to this caller
 	e.inst[baseID] = in
 	e.mu.Unlock()
-	return in, nil
+	return in, func() { e.release(in) }, nil
+}
+
+// checkout hands out the cached instance when its fingerprint still matches,
+// counting the caller as a user.
+func (e *Engine) checkout(baseID, stamp string) (*instance, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	in, ok := e.inst[baseID]
+	if !ok || in.stamp != stamp || in.retired {
+		return nil, false
+	}
+	in.users++
+	return in, true
+}
+
+func (e *Engine) release(in *instance) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	in.users--
+	e.closeIfIdleLocked(in)
+}
+
+// retireLocked marks an instance superseded and closes it if nobody holds it.
+func (e *Engine) retireLocked(in *instance) {
+	in.retired = true
+	e.closeIfIdleLocked(in)
+}
+
+func (e *Engine) closeIfIdleLocked(in *instance) {
+	if in.retired && in.users <= 0 && in.kb != nil {
+		_ = in.kb.Close()
+		in.kb = nil
+	}
+}
+
+func (e *Engine) buildLock(baseID string) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bl, ok := e.building[baseID]
+	if !ok {
+		bl = &sync.Mutex{}
+		e.building[baseID] = bl
+	}
+	return bl
 }
 
 func buildVectorStore(b *model.Base) (vectorstore.VectorStore, error) {
@@ -362,9 +432,11 @@ func (e *Engine) run(baseID, taskID string) {
 
 	if t.SourceID != "" {
 		if state == model.TaskSucceeded && t.Kind != model.TaskRemoveSource {
-			if src, err := e.st.GetSource(ctx, t.SourceID); err == nil {
-				_ = e.st.MarkSourceSynced(ctx, src.ID, src.ConfigHash, after)
-			}
+			// Record the hash this task actually ingested, not whatever the row
+			// says now. An edit made while the sync was running belongs to the
+			// next sync; marking it applied here would report configuration
+			// that never ran as live.
+			_ = e.st.MarkSourceSynced(ctx, t.SourceID, t.ConfigHash, after)
 		} else if state == model.TaskFailed {
 			_ = e.st.MarkSourceFailed(ctx, t.SourceID, msg)
 		}
@@ -392,10 +464,11 @@ func (e *Engine) execute(ctx context.Context, t *model.Task) error {
 		}
 	}
 
-	in, err := e.acquireFor(ctx, t.BaseID, t.Kind != model.TaskRemoveSource)
+	in, release, err := e.acquireFor(ctx, t.BaseID, t.Kind != model.TaskRemoveSource)
 	if err != nil {
 		return err
 	}
+	defer release()
 
 	progress := knowledge.WithLoadProgressCallback(func(_ context.Context, ev knowledge.LoadProgressEvent) {
 		if ev.Total > t.Progress.Total {
@@ -440,7 +513,14 @@ func (e *Engine) execute(ctx context.Context, t *model.Task) error {
 		if err != nil {
 			return err
 		}
-		obj, err := sourcefactory.Build(src)
+		// Build from the snapshot taken when the task was queued, so a config
+		// edit that lands mid-queue does not change what this run ingests.
+		snapshot := *src
+		snapshot.Config = t.Params
+		if t.Metadata != nil {
+			snapshot.UserMetadata = t.Metadata
+		}
+		obj, err := sourcefactory.Build(&snapshot)
 		if err != nil {
 			return err
 		}
@@ -521,10 +601,16 @@ func (e *Engine) setRegistered(baseID, sourceID string, on bool) {
 func (e *Engine) counters(ctx context.Context, baseID, sourceID string) model.Counters {
 	e.mu.Lock()
 	in, ok := e.inst[baseID]
+	if ok && !in.retired && in.kb != nil {
+		in.users++
+	} else {
+		ok = false
+	}
 	e.mu.Unlock()
 	if !ok {
 		return model.Counters{}
 	}
+	defer e.release(in)
 	var opts []vectorstore.CountOption
 	if sourceID != "" {
 		opts = append(opts, vectorstore.WithCountFilter(map[string]any{
@@ -540,9 +626,10 @@ func (e *Engine) counters(ctx context.Context, baseID, sourceID string) model.Co
 
 // Search runs a retrieval query against a base.
 func (e *Engine) Search(ctx context.Context, baseID string, req *knowledge.SearchRequest) (*knowledge.SearchResult, error) {
-	in, err := e.acquire(ctx, baseID)
+	in, release, err := e.acquire(ctx, baseID)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return in.kb.Search(ctx, req)
 }

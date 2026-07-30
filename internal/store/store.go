@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
@@ -78,6 +79,8 @@ CREATE TABLE IF NOT EXISTS task (
   counters_before     TEXT NOT NULL DEFAULT '{}',
   counters_after      TEXT NOT NULL DEFAULT '{}',
   error               TEXT NOT NULL DEFAULT '',
+  config_hash         TEXT NOT NULL DEFAULT '',
+  metadata            TEXT NOT NULL DEFAULT '{}',
   created_at          TEXT NOT NULL,
   started_at          TEXT,
   finished_at         TEXT
@@ -102,6 +105,18 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	// CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns
+	// added after a database was first created need their own step. SQLite has
+	// no ADD COLUMN IF NOT EXISTS; a duplicate-column error means it is there.
+	for _, stmt := range []string{
+		`ALTER TABLE task ADD COLUMN config_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE task ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrate: %s: %w", stmt, err)
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -134,6 +149,36 @@ func HashConfig(cfg model.SourceConfig, md map[string]any) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
+}
+
+// storedEmbedder is the database encoding of an embedder.
+//
+// model.EmbedderConfig deliberately drops the API key when it marshals, so that
+// the HTTP layer cannot echo it. Persistence needs the opposite, so the store
+// encodes and decodes the key explicitly rather than going through those
+// methods.
+type storedEmbedder struct {
+	Provider   string `json:"provider"`
+	BaseURL    string `json:"base_url,omitempty"`
+	APIKey     string `json:"api_key,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Dimensions int    `json:"dimensions,omitempty"`
+}
+
+func encodeEmbedder(e model.EmbedderConfig) string {
+	return mustJSON(storedEmbedder{
+		Provider: e.Provider, BaseURL: e.BaseURL, APIKey: e.APIKey,
+		Model: e.Model, Dimensions: e.Dimensions,
+	})
+}
+
+func decodeEmbedder(s string) model.EmbedderConfig {
+	var w storedEmbedder
+	fromJSON(s, &w)
+	return model.EmbedderConfig{
+		Provider: w.Provider, BaseURL: w.BaseURL, APIKey: w.APIKey,
+		Model: w.Model, Dimensions: w.Dimensions,
+	}
 }
 
 func mustJSON(v any) string {
@@ -182,7 +227,7 @@ func (s *Store) CreateBase(ctx context.Context, b *model.Base) error {
 		INSERT INTO base (id, name, description, vector_store, embedder, enable_source_sync,
 		                  source_defaults, retrieval, index_revision, created_at, updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		b.ID, b.Name, b.Description, mustJSON(b.VectorStore), mustJSON(b.Embedder),
+		b.ID, b.Name, b.Description, mustJSON(b.VectorStore), encodeEmbedder(b.Embedder),
 		boolToInt(b.EnableSourceSync), mustJSON(b.SourceDefaults), mustJSON(b.Retrieval),
 		b.IndexRevision, ts(now), ts(now))
 	if err != nil {
@@ -250,7 +295,7 @@ func (s *Store) UpdateBase(ctx context.Context, b *model.Base) error {
 		UPDATE base SET name=?, description=?, vector_store=?, embedder=?, enable_source_sync=?,
 		                source_defaults=?, retrieval=?, index_revision=?, updated_at=?
 		WHERE id=?`,
-		b.Name, b.Description, mustJSON(b.VectorStore), mustJSON(b.Embedder),
+		b.Name, b.Description, mustJSON(b.VectorStore), encodeEmbedder(b.Embedder),
 		boolToInt(b.EnableSourceSync), mustJSON(b.SourceDefaults), mustJSON(b.Retrieval),
 		b.IndexRevision, ts(b.UpdatedAt), b.ID)
 	if err != nil {
@@ -284,7 +329,7 @@ func scanBase(r scanner) (*model.Base, error) {
 		return nil, err
 	}
 	fromJSON(vs, &b.VectorStore)
-	fromJSON(emb, &b.Embedder)
+	b.Embedder = decodeEmbedder(emb)
 	fromJSON(defaults, &b.SourceDefaults)
 	fromJSON(retr, &b.Retrieval)
 	b.EnableSourceSync = sync != 0
@@ -449,9 +494,11 @@ func (s *Store) CreateTask(ctx context.Context, t *model.Task) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO task (id, base_id, source_id, kind, state, requested_by, params,
-		                  progress, counters_before, counters_after, error, created_at)
-		VALUES (?,?,?,?,?,?,?,'{}','{}','{}','',?)`,
-		t.ID, t.BaseID, t.SourceID, t.Kind, t.State, t.RequestedBy, mustJSON(t.Params), ts(now))
+		                  config_hash, metadata, progress, counters_before, counters_after,
+		                  error, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,'{}','{}','{}','',?)`,
+		t.ID, t.BaseID, t.SourceID, t.Kind, t.State, t.RequestedBy, mustJSON(t.Params),
+		t.ConfigHash, mustJSON(t.Metadata), ts(now))
 	return err
 }
 
@@ -526,24 +573,27 @@ func (s *Store) FinishTask(ctx context.Context, id string, state model.TaskState
 }
 
 const taskCols = `
-SELECT id, base_id, source_id, kind, state, requested_by, params, progress,
-       counters_before, counters_after, error, created_at, started_at, finished_at
+SELECT id, base_id, source_id, kind, state, requested_by, params, config_hash,
+       metadata, progress, counters_before, counters_after, error, created_at,
+       started_at, finished_at
 FROM task`
 
 func scanTask(r scanner) (*model.Task, error) {
 	var (
-		t                             model.Task
-		params, prog, cb, ca, created string
-		started, finished             sql.NullString
+		t                                 model.Task
+		params, md, prog, cb, ca, created string
+		started, finished                 sql.NullString
 	)
 	if err := r.Scan(&t.ID, &t.BaseID, &t.SourceID, &t.Kind, &t.State, &t.RequestedBy,
-		&params, &prog, &cb, &ca, &t.Error, &created, &started, &finished); err != nil {
+		&params, &t.ConfigHash, &md, &prog, &cb, &ca, &t.Error, &created,
+		&started, &finished); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	fromJSON(params, &t.Params)
+	fromJSON(md, &t.Metadata)
 	fromJSON(prog, &t.Progress)
 	fromJSON(cb, &t.CountersBefore)
 	fromJSON(ca, &t.CountersAfter)

@@ -7,6 +7,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -273,12 +274,48 @@ func ValidateMetadata(md map[string]any) error {
 }
 
 // EmbedderConfig describes the embedding endpoint for a knowledge base.
+//
+// APIKey is write-only over the API: it is accepted on input and persisted, but
+// never marshalled back out. Echoing a credential to every client that lists
+// knowledge bases turns one leaked response into a leaked key.
 type EmbedderConfig struct {
 	Provider   string `json:"provider"` // "openai" (OpenAI-compatible) — also covers Ollama
+	BaseURL    string `json:"base_url,omitempty"`
+	APIKey     string `json:"-"`
+	Model      string `json:"model,omitempty"`
+	Dimensions int    `json:"dimensions,omitempty"`
+}
+
+// embedderWire is the on-the-wire shape: the key goes in but never comes back,
+// and callers learn only whether one is set.
+type embedderWire struct {
+	Provider   string `json:"provider"`
 	BaseURL    string `json:"base_url,omitempty"`
 	APIKey     string `json:"api_key,omitempty"`
 	Model      string `json:"model,omitempty"`
 	Dimensions int    `json:"dimensions,omitempty"`
+	Configured bool   `json:"api_key_configured"`
+}
+
+// MarshalJSON omits the key and reports only whether one is stored.
+func (e EmbedderConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(embedderWire{
+		Provider: e.Provider, BaseURL: e.BaseURL, Model: e.Model,
+		Dimensions: e.Dimensions, Configured: e.APIKey != "",
+	})
+}
+
+// UnmarshalJSON accepts a key. An absent or empty key means "leave the stored
+// one alone", which is what lets a client round-trip a base it fetched without
+// wiping the credential it was never shown.
+func (e *EmbedderConfig) UnmarshalJSON(b []byte) error {
+	var w embedderWire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	e.Provider, e.BaseURL, e.Model, e.Dimensions = w.Provider, w.BaseURL, w.Model, w.Dimensions
+	e.APIKey = w.APIKey
+	return nil
 }
 
 // Configured reports whether the embedder is usable.
@@ -400,20 +437,26 @@ type Progress struct {
 
 // Task is a queued or completed control-plane operation.
 type Task struct {
-	ID             string       `json:"id"`
-	BaseID         string       `json:"base_id"`
-	SourceID       string       `json:"source_id,omitempty"`
-	Kind           TaskKind     `json:"kind"`
-	State          TaskState    `json:"state"`
-	RequestedBy    string       `json:"requested_by"`
-	Params         SourceConfig `json:"params"`
-	Progress       Progress     `json:"progress"`
-	CountersBefore Counters     `json:"counters_before"`
-	CountersAfter  Counters     `json:"counters_after"`
-	Error          string       `json:"error,omitempty"`
-	CreatedAt      time.Time    `json:"created_at"`
-	StartedAt      *time.Time   `json:"started_at,omitempty"`
-	FinishedAt     *time.Time   `json:"finished_at,omitempty"`
+	ID          string    `json:"id"`
+	BaseID      string    `json:"base_id"`
+	SourceID    string    `json:"source_id,omitempty"`
+	Kind        TaskKind  `json:"kind"`
+	State       TaskState `json:"state"`
+	RequestedBy string    `json:"requested_by"`
+	// Params, ConfigHash and Metadata are an immutable snapshot of the source
+	// as it stood when the task was queued. Reading the live row instead would
+	// let an edit made mid-sync be executed partially and then recorded as
+	// fully applied.
+	Params         SourceConfig   `json:"params"`
+	ConfigHash     string         `json:"config_hash,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	Progress       Progress       `json:"progress"`
+	CountersBefore Counters       `json:"counters_before"`
+	CountersAfter  Counters       `json:"counters_after"`
+	Error          string         `json:"error,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	StartedAt      *time.Time     `json:"started_at,omitempty"`
+	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
 }
 
 // Terminal reports whether the task will not change state again.

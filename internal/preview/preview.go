@@ -6,6 +6,7 @@ package preview
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/document"
+	"trpc.group/trpc-go/trpc-agent-go/knowledge/document/reader"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/source"
 
 	"github.com/hyprh/trpc-agent-go-knowledge-workbench/internal/model"
@@ -45,16 +47,19 @@ type Result struct {
 	Strategy string `json:"strategy"`
 	// ResolvedFrom is non-empty when the strategy was not chosen explicitly but
 	// derived from the reader, so the UI can say which default was applied.
-	ResolvedFrom string  `json:"resolved_from,omitempty"`
-	ChunkSize    int     `json:"chunk_size"`
-	Overlap      int     `json:"chunk_overlap"`
-	SourceSize   int     `json:"source_size"`
-	Count        int     `json:"count"`
-	AvgSize      int     `json:"avg_size"`
-	MaxSize      int     `json:"max_size"`
-	OverBudget   int     `json:"over_budget"`
-	Truncated    bool    `json:"truncated"`
-	Chunks       []Chunk `json:"chunks"`
+	ResolvedFrom string `json:"resolved_from,omitempty"`
+	// Reader names the reader that actually parsed the file, so the inspector
+	// can say which transform produced these chunks.
+	Reader     string  `json:"reader,omitempty"`
+	ChunkSize  int     `json:"chunk_size"`
+	Overlap    int     `json:"chunk_overlap"`
+	SourceSize int     `json:"source_size"`
+	Count      int     `json:"count"`
+	AvgSize    int     `json:"avg_size"`
+	MaxSize    int     `json:"max_size"`
+	OverBudget int     `json:"over_budget"`
+	Truncated  bool    `json:"truncated"`
+	Chunks     []Chunk `json:"chunks"`
 }
 
 // Request describes what to preview.
@@ -85,20 +90,8 @@ func Run(req Request) (*Result, error) {
 		return nil, err
 	}
 
-	// An empty strategy means "whatever the reader would pick". Upstream
-	// resolves that inside the reader, so mirror the same mapping here rather
-	// than refusing to preview — otherwise the default configuration, which is
-	// the one most sources actually run, is the one that cannot be inspected.
 	cfg := req.Config
-	resolvedFrom := ""
-	if cfg.Strategy == "" {
-		cfg.Strategy = DefaultStrategyFor(cfg.ReaderType)
-		resolvedFrom = "reader default"
-	}
 	strategy := sourcefactory.Strategy(cfg)
-	if strategy == nil {
-		return nil, fmt.Errorf("no chunking strategy selected")
-	}
 
 	doc := &document.Document{
 		ID:      req.Name,
@@ -109,9 +102,20 @@ func Run(req Request) (*Result, error) {
 			source.MetaURI:        req.Name,
 		},
 	}
+	// Chunk the content as given. This path is for text pasted into the
+	// inspector, where there is no file for a reader to parse; PreviewFile
+	// runs the real reader instead.
+	if strategy == nil {
+		cfg.Strategy = DefaultStrategyFor(cfg.ReaderType)
+		strategy = sourcefactory.Strategy(cfg)
+	}
 	chunks, err := strategy.Chunk(doc)
 	if err != nil {
 		return nil, err
+	}
+	resolvedFrom := ""
+	if req.Config.Strategy == "" {
+		resolvedFrom = "reader default"
 	}
 
 	unit := "runes"
@@ -210,6 +214,159 @@ func minInt(vs ...int) int {
 		}
 	}
 	return m
+}
+
+// PreviewFile chunks a file the way ingesting it actually would.
+//
+// It runs the registered reader for the file's extension rather than feeding
+// raw bytes to a chunking strategy. That distinction is the whole point of the
+// inspector: readers transform before they chunk. The CSV reader normalises
+// records to pipe-separated fields, the Go and Proto readers extract AST
+// entities, and PDF and DOCX are not text at all. Chunking the raw bytes
+// produced different content and a different chunk count from the same file —
+// which made the one screen people tune parameters on disagree with what the
+// ingest would do.
+func PreviewFile(path string, cfg model.SourceConfig) (string, *Result, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.IsDir() {
+		return "", nil, fmt.Errorf("%s is a directory", filepath.Base(path))
+	}
+	if info.Size() > MaxContentBytes {
+		return "", nil, fmt.Errorf("file is %d bytes, the preview limit is %d",
+			info.Size(), MaxContentBytes)
+	}
+	if err := cfg.ValidateChunking(); err != nil {
+		return "", nil, err
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+	// An explicit reader type overrides the extension, exactly as
+	// WithFileReaderType does on a source.
+	if cfg.ReaderType != "" {
+		if e, ok := extForReader(cfg.ReaderType); ok {
+			ext = e
+		}
+	}
+	rd, ok := reader.GetReader(ext, readerOptions(cfg)...)
+	if !ok {
+		return "", nil, fmt.Errorf(
+			"没有能处理 %q 的 reader；已注册的扩展名: %s", ext,
+			strings.Join(reader.GetRegisteredExtensions(), " "))
+	}
+
+	docs, err := rd.ReadFromFile(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("reader %s: %w", rd.Name(), err)
+	}
+
+	// The source pane shows the file as it is on disk when that is text, so
+	// boundaries can be located in it. Binary formats have no such view.
+	raw := ""
+	if b, err := os.ReadFile(path); err == nil && utf8.Valid(b) {
+		raw = string(b)
+	}
+	return raw, summarise(docs, cfg, rd.Name()), nil
+}
+
+// readerOptions maps the stored config onto the reader's own options, so the
+// preview is configured exactly the way a source would configure it.
+func readerOptions(cfg model.SourceConfig) []reader.Option {
+	opts := []reader.Option{
+		reader.WithChunkSize(cfg.ChunkSize),
+		reader.WithChunkOverlap(cfg.ChunkOverlap),
+	}
+	if st := sourcefactory.Strategy(cfg); st != nil {
+		opts = append(opts, reader.WithCustomChunkingStrategy(st))
+	}
+	return opts
+}
+
+// extForReader maps a reader type back to an extension the registry knows.
+func extForReader(r model.ReaderType) (string, bool) {
+	switch r {
+	case model.ReaderText:
+		return ".txt", true
+	case model.ReaderMarkdown:
+		return ".md", true
+	case model.ReaderJSON:
+		return ".json", true
+	case model.ReaderCSV:
+		return ".csv", true
+	case model.ReaderPDF:
+		return ".pdf", true
+	case model.ReaderDocx:
+		return ".docx", true
+	case model.ReaderProto:
+		return ".proto", true
+	case model.ReaderGo:
+		return ".go", true
+	}
+	return "", false
+}
+
+// summarise turns reader output into the inspector's view of it.
+func summarise(chunks []*document.Document, cfg model.SourceConfig, readerName string) *Result {
+	unit := "runes"
+	if cfg.Strategy == model.StrategyJSON {
+		unit = "bytes"
+	}
+	sizeOf := func(s string) int {
+		if unit == "bytes" {
+			return len(s)
+		}
+		return utf8.RuneCountInString(s)
+	}
+	res := &Result{
+		Unit:         unit,
+		Strategy:     string(cfg.Strategy),
+		Reader:       readerName,
+		ChunkSize:    cfg.ChunkSize,
+		Overlap:      cfg.ChunkOverlap,
+		ResolvedFrom: "",
+	}
+	if cfg.Strategy == "" {
+		res.Strategy = string(DefaultStrategyFor(cfg.ReaderType))
+		res.ResolvedFrom = "reader default"
+	}
+	total := 0
+	for i, c := range chunks {
+		if i >= MaxChunks {
+			res.Truncated = true
+			break
+		}
+		n := sizeOf(c.Content)
+		over := n > cfg.ChunkSize
+		if over {
+			res.OverBudget++
+		}
+		if n > res.MaxSize {
+			res.MaxSize = n
+		}
+		total += n
+		res.SourceSize += n
+		md := pickMetadata(c.Metadata)
+		prev := ""
+		if i > 0 {
+			prev = chunks[i-1].Content
+		}
+		res.Chunks = append(res.Chunks, Chunk{
+			Index:       i,
+			Content:     c.Content,
+			Size:        n,
+			Unit:        unit,
+			OverlapSize: sharedWithPrev(prev, c.Content, overlapOf(md, n), unit),
+			OverBudget:  over,
+			Metadata:    md,
+		})
+	}
+	res.Count = len(res.Chunks)
+	if res.Count > 0 {
+		res.AvgSize = total / res.Count
+	}
+	return res
 }
 
 // overlapOf derives how much of a chunk's head is repeated from the previous
@@ -365,6 +522,60 @@ func addEntry(out *[]TreeEntry, seen map[string]bool, path string, size int64, a
 	}
 	seen[path] = true
 	*out = append(*out, TreeEntry{Path: path, Name: filepath.Base(path), Size: size, Ext: ext})
+}
+
+// ResolveWithinSource confines a requested path to the roots a source declares.
+//
+// Both the roots and the request are resolved through symlinks before they are
+// compared, so a link inside a source directory cannot be used to step outside
+// it. Without this the preview endpoint is an arbitrary-file-read primitive for
+// anyone who can reach the port.
+func ResolveWithinSource(src *model.Source, path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("%w: path is required", model.ErrValidation)
+	}
+	roots := sourceRoots(src)
+	if len(roots) == 0 {
+		return "", fmt.Errorf("%w: source %q declares no readable paths", model.ErrValidation, src.DisplayName)
+	}
+	want, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// Report the original path; the resolved one leaks layout on failure.
+		return "", fmt.Errorf("%w: %s", fs.ErrNotExist, filepath.Base(path))
+	}
+	for _, root := range roots {
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		if want == real {
+			return want, nil
+		}
+		// filepath.Rel alone accepts "..", so require the prefix as well.
+		rel, err := filepath.Rel(real, want)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return want, nil
+	}
+	return "", fmt.Errorf("%w: 该路径不属于 source %q", model.ErrValidation, src.DisplayName)
+}
+
+// sourceRoots lists the filesystem locations a source is allowed to read.
+func sourceRoots(src *model.Source) []string {
+	switch src.Type {
+	case model.SourceFile:
+		return src.Config.Paths
+	case model.SourceDir:
+		return src.Config.Dirs
+	case model.SourceAuto:
+		return src.Config.Inputs
+	case model.SourceRepo:
+		if src.Config.Repository != nil && src.Config.Repository.Dir != "" {
+			return []string{src.Config.Repository.Dir}
+		}
+	}
+	return nil
 }
 
 // ReadFile loads a file for preview, refusing anything over the limit.
