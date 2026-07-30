@@ -379,6 +379,71 @@ body.resizing * { cursor:col-resize !important; }
               gap:8px; justify-content:flex-end; }
 .modal .frow { grid-template-columns:150px 1fr; }
 
+/* Structured chunk rendering.
+   Reader output is not prose: CSV arrives as pipe-separated records and JSON as
+   re-serialized objects. Laid out, a chunk boundary is visible as "records 1-4";
+   as one wrapped line it is not. The raw text stays one click away because that
+   literal string is what gets embedded. */
+table.cs { border-collapse:collapse; width:100%; font-family:var(--font-mono); font-size:10.5px; }
+table.cs td, table.cs th { border:1px solid var(--line-soft); padding:3px 6px; text-align:left;
+                           vertical-align:top; max-width:260px; overflow-wrap:anywhere; }
+table.cs th { background:var(--surface-2); font-weight:600; position:sticky; top:0; }
+table.cs tr.partial td { background:var(--warn-soft); }
+table.cs tr.partial td:first-child::before { content:"⋯ "; color:var(--warn); }
+.cs-wrap { overflow-x:auto; }
+
+.js-tree { font-family:var(--font-mono); font-size:10.5px; line-height:1.6; white-space:pre; }
+.js-k { color:var(--cyan); }
+.js-s { color:var(--ok); }
+.js-n { color:var(--magenta); }
+.js-b { color:var(--overprint); }
+.js-null { color:var(--faint); }
+
+/* Rendered markdown. Sized down from prose defaults: this sits inside a chunk
+   card, so the hierarchy has to read at a glance without pushing one chunk to
+   a screenful. */
+.md-p, .md-list, .md-quote { margin:0 0 7px; font-size:12px; line-height:1.6;
+                             font-family:var(--font-ui); }
+.md-h { font-weight:650; letter-spacing:-.01em; margin:0 0 6px; font-family:var(--font-ui); }
+.md-h1 { font-size:15px; } .md-h2 { font-size:14px; } .md-h3 { font-size:13px; }
+.md-h4, .md-h5, .md-h6 { font-size:12.5px; color:var(--muted); }
+.md-list { padding-left:18px; }
+.md-list li { margin-bottom:2px; }
+.md-quote { border-left:2px solid var(--line); padding-left:9px; color:var(--muted); }
+.md-code { background:var(--surface-2); border-radius:var(--r); padding:7px 9px; margin:0 0 7px;
+           font-family:var(--font-mono); font-size:10.5px; line-height:1.55;
+           white-space:pre-wrap; word-break:break-word; overflow-x:auto; }
+.md-code[data-lang]::before { content:attr(data-lang); display:block; font-size:9px;
+                              letter-spacing:.1em; text-transform:uppercase;
+                              color:var(--faint); margin-bottom:4px; }
+.md-c { background:var(--surface-2); border-radius:2px; padding:0 3px;
+        font-family:var(--font-mono); font-size:11px; }
+.md-a { color:var(--cyan); text-decoration:underline; text-underline-offset:2px; }
+.md-hr { border:0; border-top:1px solid var(--line); margin:9px 0; }
+.md-body { padding:16px 20px 40px; overflow-y:auto; flex:1; }
+
+/* The section a chunk belongs to. Most chunks do not contain their own heading,
+   so this is the only thing that places them in the document. */
+.md-path { display:flex; flex-wrap:wrap; align-items:center; gap:3px; padding:5px 11px 0;
+           font-size:10.5px; color:var(--faint); font-family:var(--font-ui); }
+.md-path .sep { color:var(--line); margin:0 1px; }
+.ck-metabtn { height:17px; padding:0 6px; font-size:10px; font-family:var(--font-mono); }
+.ck-warn { padding:5px 11px 0; display:flex; gap:5px; flex-wrap:wrap; }
+
+/* Per-chunk metadata, hidden until asked for. */
+.ck-meta { border-top:1px solid var(--line-soft); background:var(--surface-2);
+           padding:7px 11px; display:grid; grid-template-columns:auto 1fr; gap:3px 10px;
+           font-family:var(--font-mono); font-size:10.5px; }
+.ck-meta dt { color:var(--faint); white-space:nowrap; }
+.ck-meta dd { margin:0; word-break:break-all; }
+.ck-meta .empty { grid-column:1/-1; color:var(--faint); }
+
+.view-toggle { display:inline-flex; background:var(--surface-2); border:1px solid var(--line);
+               border-radius:var(--r); padding:1px; gap:1px; }
+.view-toggle button { height:18px; padding:0 7px; border:0; background:transparent; border-radius:2px;
+                      cursor:pointer; font-size:10.5px; color:var(--muted); }
+.view-toggle button.on { background:var(--surface); color:var(--text); font-weight:600; }
+
 /* retrieval controls */
 .rt-bar { padding:11px 18px; border-bottom:1px solid var(--line); flex:none;
           display:flex; flex-direction:column; gap:9px; }

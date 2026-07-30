@@ -175,7 +175,12 @@
           <div class="gutter" id="ciGutter" role="separator" aria-orientation="vertical"
                tabindex="0" aria-label="调整文件树宽度"></div>
           <div class="ci-pane">
-            <div class="pane-head"><h3>Source</h3><span class="chip" id="ciSrcMeta">—</span></div>
+            <div class="pane-head"><h3>Source</h3><span class="chip" id="ciSrcMeta">—</span>
+              <span class="spacer"></span>
+              <div class="view-toggle" id="ciView" hidden>
+                <button type="button" data-view="rendered">渲染</button>
+                <button type="button" data-view="raw">原文</button>
+              </div></div>
             <div class="doc" id="ciDoc"></div>
           </div>
           <div class="ci-pane">

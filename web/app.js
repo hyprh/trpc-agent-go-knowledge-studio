@@ -10,6 +10,8 @@ const S = {
   // previous base cannot land in the new one's view.
   gen: 0,
   previewGen: 0,
+  rawView: false,
+  metaOpen: {},
 };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) =>
@@ -868,6 +870,246 @@ function openModal(title, bodyHTML, onOK) {
   veil.querySelector('input,textarea,select')?.focus();
 }
 
+$('ciView').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-view]');
+  if (!b) return;
+  S.rawView = b.dataset.view === 'raw';
+  if (S.preview) renderPreview();
+});
+
+/* ── structured chunk rendering ─────────────────────────────────────── */
+
+// The CSV reader emits one record per line with " | " between fields. Laying
+// those out as a table makes it obvious which records a chunk covers; as a
+// wrapped monospace blob it is not.
+//
+// A chunk can start or end mid-record, because chunking cuts on a size budget
+// rather than on record boundaries. Such a row has fewer fields than the header
+// and is marked rather than padded — a silently completed row would hide
+// exactly the boundary problem the inspector exists to show.
+function renderCsv(text, headerCols) {
+  const lines = text.split('\n').filter((l) => l !== '');
+  if (!lines.length) return '';
+  const rows = lines.map((l) => l.split(' | '));
+  let head = null, body = rows;
+  // Treat the first row as a header only when it really is the file's header.
+  if (headerCols && rows[0].length === headerCols.length &&
+      rows[0].every((c, i) => c === headerCols[i])) {
+    head = rows[0];
+    body = rows.slice(1);
+  }
+  const width = head ? head.length : Math.max(...rows.map((r) => r.length));
+  return '<div class="cs-wrap"><table class="cs">' +
+    (head ? '<thead><tr>' + head.map((c) => `<th>${esc(c)}</th>`).join('') + '</tr></thead>' : '') +
+    '<tbody>' + body.map((r) => {
+      const partial = r.length < width;
+      return `<tr class="${partial ? 'partial' : ''}">` +
+        r.map((c) => `<td>${esc(c)}</td>`).join('') +
+        (partial ? `<td colspan="${width - r.length}"></td>` : '') +
+        '</tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+// The JSON reader re-serializes its input compactly with sorted keys, so a
+// chunk shares no formatting with the file on disk. Pretty-printing it back is
+// the only way to read one; when a chunk is not valid JSON on its own the raw
+// text is shown rather than a guess.
+function renderJson(text) {
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return null; }
+  return `<div class="js-tree">${colourJson(parsed, 0)}</div>`;
+}
+
+function colourJson(v, depth) {
+  const pad = '  '.repeat(depth + 1);
+  const close = '  '.repeat(depth);
+  if (v === null) return '<span class="js-null">null</span>';
+  if (typeof v === 'string') return `<span class="js-s">${esc(JSON.stringify(v))}</span>`;
+  if (typeof v === 'number') return `<span class="js-n">${v}</span>`;
+  if (typeof v === 'boolean') return `<span class="js-b">${v}</span>`;
+  if (Array.isArray(v)) {
+    if (!v.length) return '[]';
+    return '[\n' + v.map((x) => pad + colourJson(x, depth + 1)).join(',\n') + '\n' + close + ']';
+  }
+  const keys = Object.keys(v);
+  if (!keys.length) return '{}';
+  return '{\n' + keys.map((k) =>
+    `${pad}<span class="js-k">${esc(JSON.stringify(k))}</span>: ${colourJson(v[k], depth + 1)}`
+  ).join(',\n') + '\n' + close + '}';
+}
+
+// Everything the reader attached to this chunk. These are the keys a metadata
+// filter in Retrieval can be written against, so the panel shows them exactly
+// as stored rather than prettified.
+function renderChunkMeta(md) {
+  const keys = Object.keys(md || {}).sort();
+  if (!keys.length) {
+    return '<div class="ck-meta"><span class="empty">这一块没有 metadata</span></div>';
+  }
+  return '<dl class="ck-meta">' + keys.map((k) => {
+    const v = md[k];
+    const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return `<dt>${esc(k)}</dt><dd>${esc(text)}</dd>`;
+  }).join('') + '</dl>';
+}
+
+/* Markdown rendering.
+   Hand-rolled rather than pulled in: the page loads no third-party code, and
+   only the constructs these documents actually use need supporting.
+
+   What matters here is that a chunk is a fragment, not a document. It can begin
+   mid-table, or open a code fence it never closes. Rendering those as if they
+   were whole hides exactly the boundary problem worth seeing, so the renderer
+   reports what it had to patch up and the card shows it. */
+function renderMarkdown(text) {
+  const notes = [];
+  const lines = text.split('\n');
+  const out = [];
+  let i = 0;
+
+  // An odd number of fences means the chunk cut through a code block.
+  if ((text.match(/^```/gm) || []).length % 2 === 1) {
+    notes.push('代码块被切断');
+  }
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (/^```/.test(line)) {                       // fenced code
+      const lang = line.slice(3).trim();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++;                                          // consume closing fence if present
+      out.push(`<pre class="md-code"${lang ? ` data-lang="${esc(lang)}"` : ''}>` +
+        esc(buf.join('\n')) + '</pre>');
+      continue;
+    }
+
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      const lv = h[1].length;
+      out.push(`<div class="md-h md-h${lv}">${inlineMd(h[2])}</div>`);
+      i++;
+      continue;
+    }
+
+    if (/^\s*([-*_])\s*\1\s*\1[\s-*_]*$/.test(line)) { out.push('<hr class="md-hr">'); i++; continue; }
+
+    if (/^\s*\|/.test(line)) {                     // table, possibly headless
+      const buf = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) { buf.push(lines[i]); i++; }
+      out.push(renderMdTable(buf, notes));
+      continue;
+    }
+
+    if (/^\s*>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, '')); i++; }
+      out.push(`<div class="md-quote">${inlineMd(buf.join(' '))}</div>`);
+      continue;
+    }
+
+    const li = /^\s*(?:[-*+]|\d+[.)])\s+/.test(line);
+    if (li) {
+      const ordered = /^\s*\d+[.)]\s/.test(line);
+      const buf = [];
+      while (i < lines.length && /^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ''));
+        i++;
+      }
+      out.push(`<${ordered ? 'ol' : 'ul'} class="md-list">` +
+        buf.map((b) => `<li>${inlineMd(b)}</li>`).join('') + `</${ordered ? 'ol' : 'ul'}>`);
+      continue;
+    }
+
+    if (line.trim() === '') { i++; continue; }
+
+    const buf = [];
+    while (i < lines.length && lines[i].trim() !== '' &&
+           !/^```|^\s*\||^\s*>|^#{1,6}\s|^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i])) {
+      buf.push(lines[i]); i++;
+    }
+    out.push(`<p class="md-p">${inlineMd(buf.join(' '))}</p>`);
+  }
+  return { html: out.join(''), notes };
+}
+
+// A markdown table needs a header and a separator row. A chunk that starts
+// partway through one has neither, so it is rendered headless and flagged
+// rather than promoting its first data row to a header.
+function renderMdTable(rows, notes) {
+  const cells = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const isSep = (r) => /^\s*\|?[\s:|-]+\|?\s*$/.test(r) && r.includes('-');
+  let head = null, body = rows;
+  if (rows.length > 1 && isSep(rows[1])) {
+    head = cells(rows[0]);
+    body = rows.slice(2);
+  } else if (!isSep(rows[0])) {
+    notes.push('表格没有表头（从中间切开）');
+  }
+  body = body.filter((r) => !isSep(r));
+  return '<div class="cs-wrap"><table class="cs">' +
+    (head ? '<thead><tr>' + head.map((c) => `<th>${inlineMd(c)}</th>`).join('') + '</tr></thead>' : '') +
+    '<tbody>' + body.map((r) =>
+      '<tr>' + cells(r).map((c) => `<td>${inlineMd(c)}</td>`).join('') + '</tr>').join('') +
+    '</tbody></table></div>';
+}
+
+// Inline markdown. The text is escaped first, so nothing in the document can
+// introduce markup of its own; the patterns below only ever add tags.
+function inlineMd(s) {
+  let t = esc(s);
+  t = t.replace(/`([^`]+)`/g, '<code class="md-c">$1</code>');
+  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  t = t.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, label, href) =>
+    // Only well-known schemes become links; anything else stays plain text so a
+    // javascript: URL in a document cannot become clickable.
+    /^(https?:|mailto:)/i.test(href)
+      ? `<a class="md-a" href="${href}" target="_blank" rel="noopener noreferrer nofollow">${label || href}</a>`
+      : `${label || href}`);
+  return t;
+}
+
+// Render chunk text according to what the reader produced, falling back to the
+// literal text whenever the structured view cannot be trusted.
+function renderChunkBody(text, kind, headerCols) {
+  if (S.rawView) return null;
+  if (kind === 'csv') return { html: renderCsv(text, headerCols), notes: [] };
+  if (kind === 'json') {
+    const h = renderJson(text);
+    return h === null ? null : { html: h, notes: [] };
+  }
+  if (kind === 'markdown') return renderMarkdown(text);
+  return null;
+}
+
+// The header row of a CSV, in the reader's own field separator, so chunk tables
+// can tell a real header from a coincidence.
+function csvHeader(p) {
+  if (!p || p.kind !== 'csv' || !p.chunks.length) return null;
+  const first = (p.chunks[0].content || '').split('\n')[0];
+  return first ? first.split(' | ') : null;
+}
+
+// Split one CSV line, honouring quoted fields containing commas.
+function splitCsvLine(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') q = false;
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
 /* ── resizable panes ────────────────────────────────────────────────── */
 
 // Drag a gutter to resize the pane on its right. The width lands on a CSS
@@ -1016,6 +1258,7 @@ async function runPreview() {
     S.content = r.content;
     S.spans = [];
     S.selChunk = -1;
+    S.metaOpen = {};
     $('ciBanner').innerHTML = '';
     renderPreview();
   } catch (e) {
@@ -1038,7 +1281,15 @@ function renderPreview() {
   const p = S.preview;
   if (!p) return;
   $('ciUnit').textContent = 'unit: ' + p.unit;
-  $('ciSrcMeta').textContent = n(p.source_size) + ' ' + p.unit;
+  $('ciSrcMeta').textContent = (p.reader ? p.reader + ' · ' : '') +
+    n(p.source_size) + ' ' + p.unit;
+  // The toggle only appears where there is something to toggle between.
+  const structuredKind = p.kind === 'csv' || p.kind === 'json' || p.kind === 'markdown';
+  $('ciView').hidden = !structuredKind;
+  if (structuredKind) {
+    $('ciView').querySelectorAll('[data-view]').forEach((b) =>
+      b.classList.toggle('on', (b.dataset.view === 'raw') === !!S.rawView));
+  }
   $('ciMetrics').innerHTML = `
     <div class="met"><span class="lbl">chunks</span><b>${n(p.count)}</b>
       <span class="d">${esc(p.strategy)}${p.resolved_from ? ' ← ' + esc(p.resolved_from) : ''} · ${p.unit}</span></div>
@@ -1076,14 +1327,30 @@ function renderPreview() {
       : '',
   ].filter(Boolean).join(' · ');
 
+  const header = csvHeader(p);
   $('ciChunks').innerHTML = p.chunks.map((c, i) => {
     // The leading overlap is the slice of this chunk that also ends the
     // previous one. Slice by code point so it lines up with a rune budget.
     const chars = Array.from(c.content);
     const ov = Math.min(c.overlap_size || 0, chars.length);
-    const body = ov > 0
-      ? `<span class="ovl">${esc(chars.slice(0, ov).join(''))}</span>${esc(chars.slice(ov).join(''))}`
-      : esc(c.content);
+    // Structured views cannot carry the overlap highlight — the shared text is
+    // a prefix of the raw string, not of a table or a re-indented object — so
+    // the marker only appears in the raw view, where it means something.
+    const structured = renderChunkBody(c.content, p.kind, header);
+    const body = structured && structured.html
+      ? structured.html
+      : (ov > 0
+        ? `<span class="ovl">${esc(chars.slice(0, ov).join(''))}</span>${esc(chars.slice(ov).join(''))}`
+        : esc(c.content));
+    // Only one chunk in fifteen begins with a heading, so without the header
+    // path there is nothing in the body saying which section it came from.
+    const metaCount = Object.keys(c.metadata || {}).length;
+    const path = (c.metadata || {})['trpc_agent_go_markdown_header_path'];
+    const crumbs = path
+      ? `<div class="md-path">${path.split(' > ').map((x) => esc(x)).join('<span class="sep">›</span>')}</div>`
+      : '';
+    const warn = (structured && structured.notes || [])
+      .map((t) => `<span class="chip warn">${esc(t)}</span>`).join('');
     const core = c.size - ov;
     // How much of this chunk's tail the next one will carry. It is the next
     // chunk's overlap, not this one's, so it is labelled but not highlighted —
@@ -1098,8 +1365,12 @@ function renderPreview() {
         <span class="spacer"></span>
         <span class="lbl">core ${core}</span>
         ${lent > 0 ? `<span class="lbl" title="这段会成为下一块的 overlap，不计入本块预算">尾部 ${lent} → 下块</span>` : ''}
+        <button class="btn gho ck-metabtn" type="button" data-meta="${i}"
+                title="查看这一块写入向量库的 metadata">${S.metaOpen[i] ? '收起' : 'meta'} ${metaCount}</button>
       </div>
+      ${crumbs}${warn ? `<div class="ck-warn">${warn}</div>` : ''}
       <div class="ck-txt">${body}</div>
+      ${S.metaOpen[i] ? renderChunkMeta(c.metadata) : ''}
       <div class="budget">
         ${ov > 0 ? `<i style="width:${(ov / p.chunk_size) * 100}%;background:var(--overprint)"></i>` : ''}
         <i class="${c.over_budget ? 'over' : ''}" style="width:${Math.min(100, (core / p.chunk_size) * 100)}%"></i>
@@ -1170,6 +1441,37 @@ function renderDoc() {
   const p = S.preview, text = S.content || '';
   const doc = $('ciDoc');
   if (!p) { doc.textContent = text; S.spans = []; drawConnectors(); return; }
+
+  // The source pane shows the file as it is on disk. For CSV that is the
+  // comma-separated original, not the reader's pipe-separated output, so it is
+  // parsed on commas here; the difference between the two panes is the reader's
+  // transform and is worth seeing.
+  if (!S.rawView && p.kind === 'csv') {
+    const rows = text.split('\n').filter((l) => l !== '').map(splitCsvLine);
+    doc.innerHTML = '<div class="cs-wrap"><table class="cs">' +
+      '<thead><tr>' + (rows[0] || []).map((c) => `<th>${esc(c)}</th>`).join('') + '</tr></thead>' +
+      '<tbody>' + rows.slice(1).map((r) =>
+        '<tr>' + r.map((c) => `<td>${esc(c)}</td>`).join('') + '</tr>').join('') +
+      '</tbody></table></div>';
+    S.spans = [];
+    requestAnimationFrame(drawConnectors);
+    return;
+  }
+  if (!S.rawView && p.kind === 'markdown') {
+    doc.innerHTML = `<div class="md-body">${renderMarkdown(text).html}</div>`;
+    S.spans = [];
+    requestAnimationFrame(drawConnectors);
+    return;
+  }
+  if (!S.rawView && p.kind === 'json') {
+    const rendered = renderJson(text);
+    if (rendered !== null) {
+      doc.innerHTML = rendered;
+      S.spans = [];
+      requestAnimationFrame(drawConnectors);
+      return;
+    }
+  }
   if (!S.spans || !S.spans.length) S.spans = locateChunks();
 
   // Cut points from every boundary, then attribute each slice.
@@ -1277,6 +1579,16 @@ $('ciChunks').addEventListener('scroll', scheduleConnectors, { passive: true });
 window.addEventListener('resize', scheduleConnectors);
 
 $('ciChunks').addEventListener('click', (e) => {
+  const mb = e.target.closest('[data-meta]');
+  if (mb) {
+    // Toggling metadata must not also select the chunk — the two are separate
+    // questions and selecting scrolls both panes.
+    e.stopPropagation();
+    const k = +mb.dataset.meta;
+    S.metaOpen[k] = !S.metaOpen[k];
+    renderPreview();
+    return;
+  }
   const el = e.target.closest('.ck');
   if (!el) return;
   const i = +el.dataset.i;

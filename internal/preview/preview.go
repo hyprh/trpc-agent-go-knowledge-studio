@@ -50,7 +50,9 @@ type Result struct {
 	ResolvedFrom string `json:"resolved_from,omitempty"`
 	// Reader names the reader that actually parsed the file, so the inspector
 	// can say which transform produced these chunks.
-	Reader     string  `json:"reader,omitempty"`
+	Reader string `json:"reader,omitempty"`
+	// Kind tells the UI how to lay the content out: "csv", "json" or "text".
+	Kind       string  `json:"kind,omitempty"`
 	ChunkSize  int     `json:"chunk_size"`
 	Overlap    int     `json:"chunk_overlap"`
 	SourceSize int     `json:"source_size"`
@@ -284,6 +286,40 @@ func readerOptions(cfg model.SourceConfig) []reader.Option {
 	return opts
 }
 
+// strategyForReader names the chunking each upstream reader builds when no
+// override is given. Taken from the readers themselves: text and CSV construct
+// FixedSizeChunking, Markdown constructs MarkdownChunking, JSON constructs
+// JSONChunking.
+func strategyForReader(name string) model.Strategy {
+	switch {
+	case strings.HasPrefix(name, "JSON"):
+		return model.StrategyJSON
+	case strings.HasPrefix(name, "Markdown"):
+		return model.StrategyMarkdown
+	case strings.HasPrefix(name, "CSV"), strings.HasPrefix(name, "Text"):
+		return model.StrategyFixed
+	default:
+		return model.StrategyRecursive
+	}
+}
+
+// kindForReader tells the UI how to display chunk content. Reader output is not
+// always prose: the CSV reader emits pipe-separated records and the JSON reader
+// emits re-serialized objects, both of which are far easier to compare against
+// the source when laid out rather than shown as one long line.
+func kindForReader(name string) string {
+	switch {
+	case strings.HasPrefix(name, "CSV"):
+		return "csv"
+	case strings.HasPrefix(name, "JSON"):
+		return "json"
+	case strings.HasPrefix(name, "Markdown"):
+		return "markdown"
+	default:
+		return "text"
+	}
+}
+
 // extForReader maps a reader type back to an extension the registry knows.
 func extForReader(r model.ReaderType) (string, bool) {
 	switch r {
@@ -309,8 +345,18 @@ func extForReader(r model.ReaderType) (string, bool) {
 
 // summarise turns reader output into the inspector's view of it.
 func summarise(chunks []*document.Document, cfg model.SourceConfig, readerName string) *Result {
+	// Report the strategy that ran, not the one that was configured. With no
+	// override the reader builds its own, so labelling the result from an empty
+	// config called every unconfigured preview "recursive" and measured JSON in
+	// runes when JSONChunking budgets in serialized bytes.
+	effective := cfg.Strategy
+	resolved := ""
+	if effective == "" {
+		effective = strategyForReader(readerName)
+		resolved = readerName + " default"
+	}
 	unit := "runes"
-	if cfg.Strategy == model.StrategyJSON {
+	if effective == model.StrategyJSON {
 		unit = "bytes"
 	}
 	sizeOf := func(s string) int {
@@ -321,15 +367,12 @@ func summarise(chunks []*document.Document, cfg model.SourceConfig, readerName s
 	}
 	res := &Result{
 		Unit:         unit,
-		Strategy:     string(cfg.Strategy),
+		Strategy:     string(effective),
 		Reader:       readerName,
+		Kind:         kindForReader(readerName),
 		ChunkSize:    cfg.ChunkSize,
 		Overlap:      cfg.ChunkOverlap,
-		ResolvedFrom: "",
-	}
-	if cfg.Strategy == "" {
-		res.Strategy = string(DefaultStrategyFor(cfg.ReaderType))
-		res.ResolvedFrom = "reader default"
+		ResolvedFrom: resolved,
 	}
 	total := 0
 	for i, c := range chunks {
@@ -404,27 +447,25 @@ func toInt(v any) (int, bool) {
 	return 0, false
 }
 
-// pickMetadata keeps the chunk-level keys worth showing and drops the rest, so
-// the response does not carry a copy of every source field per chunk.
+// pickMetadata returns the chunk's metadata as the reader produced it.
+//
+// It used to keep a five-key whitelist to bound the response, but every key a
+// reader attaches is something the inspector exists to show — a filter written
+// against a key the UI never displayed is the reason metadata filters silently
+// matched nothing. Only genuinely large values are trimmed, and the trim is
+// visible rather than silent.
 func pickMetadata(md map[string]any) map[string]any {
-	if md == nil {
+	if len(md) == 0 {
 		return nil
 	}
-	keep := []string{
-		source.MetaChunkIndex,
-		source.MetaChunkSize,
-		source.MetaChunkType,
-		source.MetaMarkdownHeaderPath,
-		source.MetaOverlappedContentSize,
-	}
-	out := map[string]any{}
-	for _, k := range keep {
-		if v, ok := md[k]; ok {
-			out[k] = v
+	const maxValueLen = 400
+	out := make(map[string]any, len(md))
+	for k, v := range md {
+		if s, ok := v.(string); ok && len(s) > maxValueLen {
+			out[k] = s[:maxValueLen] + fmt.Sprintf("… (+%d 字符)", len(s)-maxValueLen)
+			continue
 		}
-	}
-	if len(out) == 0 {
-		return nil
+		out[k] = v
 	}
 	return out
 }
